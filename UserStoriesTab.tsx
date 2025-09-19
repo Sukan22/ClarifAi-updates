@@ -1,14 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, ChevronUp, CircleCheck, CirclePlus, RotateCcw, Eye, User2Icon, Pencil } from "lucide-react";
-import { Sparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleCheck, CirclePlus, RotateCcw, Eye, User2Icon } from "lucide-react";
 import FeedbackModal from "@/components/clarifai/FeedbackModal";
 import EditStoryModal from "@/components/clarifai/EditStoryModal";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from "@/components/ui/dialog";
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose, DialogFooter } from "@/components/ui/dialog";
 import { ConfidenceBadge } from "./ConfidenceBadge";
 import { Badge } from "../ui/badge";
 
@@ -38,20 +37,22 @@ type FormattedRequirement = {
     tshirt_size: string;
     priority: string;
     tags: string[];
+    confidence: number;
   }[];
 };
 
+type Story = FormattedRequirement['stories'][0];
+
 interface UserStoriesProps {
-  goTogerkin: (gerkinData: any[]) => void;
+  goTogerkin: (gerkinData: any) => void;
   userstoriesData: Requirement[];
   fulluserstoriesdataPayload: { user_stories: Requirement[] };
-  fullValidatorPayload: () => void;
-  onUpdatedUserStoriesData?: (data: Requirement[]) => void;
+  fullValidatorPayload: any;
+  onUpdatedUserStoriesData: (updatedData: Requirement[]) => void;
+  onUpdateUserStoriesPayload: (updatedPayload: any) => void;
 }
 
-export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserstoriesdataPayload, fullValidatorPayload, onUpdatedUserStoriesData }: UserStoriesProps) {
-  const [showEdit, setShowEdit] = useState(false);
-  const [showFeedback, setShowFeedback] = useState(false);
+export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserstoriesdataPayload, fullValidatorPayload, onUpdatedUserStoriesData, onUpdateUserStoriesPayload }: UserStoriesProps) {
   const [confidenceThreshold, setConfidenceThreshold] = useState(0);
   const [roleFilter, setRoleFilter] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -59,17 +60,29 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
   const [expandAll, setExpandAll] = useState(false);
   const [expandedReqs, setExpandedReqs] = useState<Record<string, boolean>>({});
   const [tagFilter, setTagFilter] = useState<string[]>([]);
-  const [selectedStory, setSelectedStory] = useState<null | {
-    usid: string;
-    title: string;
-    role: string;
-    story: string;
-    description: string;
-    acceptanceCriteria: string[];
-    tshirt_size: string;
-    priority: string;
-    tags: string[];
-  }>(null);
+  const [selectedStory, setSelectedStory] = useState<null | Story>(null);
+  const [currentReqId, setCurrentReqId] = useState<string | null>(null);
+  const [isViewOpen, setIsViewOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'view' | 'edit' | 'refine'>('view');
+  const [showDialogMessage, setShowDialogMessage] = useState<string>('');
+  const [editedStory, setEditedStory] = useState<Story>(null as any);
+  // Refine states
+  const [feedback, setFeedback] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [sendClicked, setSendClicked] = useState(false);
+  const [updatedStory, setUpdatedStory] = useState<any>(null);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const timeroutRef = useRef<any>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editableStory, setEditableStory] = useState<any>(null);
+
+  useEffect(() => {
+    if (showDialogMessage) {
+      const timer = setTimeout(() => setShowDialogMessage(''), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [showDialogMessage]);
 
   useEffect(() => {
     const extractRoleFromStory = (story: string): string => {
@@ -83,7 +96,7 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
 
     const formattedData: FormattedRequirement[] = userstoriesData.map((storyObj) => ({
       id: storyObj.requirement_id,
-      confidence: storyObj.confidence_score,
+      confidence: storyObj.confidence_score ?? 0.5,
       stories: [
         {
           usid: storyObj.user_story_id,
@@ -95,11 +108,13 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
           tshirt_size: storyObj.tshirt_size,
           priority: storyObj.priority,
           tags: storyObj.tags,
+          confidence: storyObj.confidence_score ?? 0.5,
         },
       ],
     }));
 
     setRequirements(formattedData);
+    console.log('UserStoriesTab - Initial requirements:', formattedData);
   }, [userstoriesData]);
 
   const [isRegenerating, setIsRegenerating] = useState(false);
@@ -222,7 +237,7 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
 
       const formattedData: FormattedRequirement[] = regenerateData.map((storyObj) => ({
         id: storyObj.requirement_id,
-        confidence: storyObj.confidence_score,
+        confidence: storyObj.confidence_score ?? 0.5,
         stories: [
           {
             usid: storyObj.user_story_id,
@@ -234,11 +249,14 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
             tshirt_size: storyObj.tshirt_size,
             priority: storyObj.priority,
             tags: storyObj.tags,
+            confidence: storyObj.confidence_score ?? 0.5,
           },
         ],
       }));
 
       setRequirements(formattedData);
+      onUpdateUserStoriesPayload(data);
+      onUpdatedUserStoriesData(regenerateData);
       setShowMessage(true);
       setTimeout(() => {
         setShowMessage(false);
@@ -289,9 +307,190 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
     setExpandedReqs(newStates);
   }, [expandAll, requirements]);
 
+  const handleEditClick = () => {
+    setEditedStory(selectedStory);
+    setViewMode('edit');
+  };
+
+  const handleRefineClick = () => {
+    setFeedback('');
+    setUpdatedStory(null);
+    setIsEditing(false);
+    setEditableStory(null);
+    setViewMode('refine');
+  };
+
+  const handleEditSave = () => {
+    const normalizedConfidence =
+      typeof editedStory.confidence === 'string'
+        ? editedStory.confidence.toLowerCase() === 'high' ? 0.8 : editedStory.confidence.toLowerCase() === 'medium' ? 0.5 : 0.2
+        : editedStory.confidence ?? selectedStory?.confidence ?? 0;
+
+    const normalizedStory = { ...editedStory, confidence: normalizedConfidence };
+    setSelectedStory(normalizedStory);
+    setRequirements((prevReqs) =>
+      prevReqs.map((req) => ({
+        ...req,
+        stories: req.stories.map((s) =>
+          s.usid === selectedStory?.usid ? { ...s, ...normalizedStory } : s
+        ),
+        confidence: normalizedConfidence,
+      }))
+    );
+    const currentReq = requirements.find((r) => r.id === currentReqId);
+    const updatedRequirement: Requirement = {
+      requirement_id: currentReqId!,
+      user_story_id: normalizedStory.usid,
+      title: normalizedStory.title,
+      user_story: normalizedStory.story,
+      description: normalizedStory.description,
+      acceptance_criteria: normalizedStory.acceptanceCriteria,
+      confidence_score: normalizedConfidence,
+      tshirt_size: normalizedStory.tshirt_size,
+      priority: normalizedStory.priority,
+      tags: normalizedStory.tags,
+    };
+    const updatedStories = fulluserstoriesdataPayload.user_stories.map((r: Requirement) =>
+      r.requirement_id === currentReqId ? updatedRequirement : r
+    );
+    const updatedPayload = { ...fulluserstoriesdataPayload, user_stories: updatedStories };
+    onUpdateUserStoriesPayload(updatedPayload);
+    onUpdatedUserStoriesData(updatedStories);
+    setShowDialogMessage('Edit submitted successfully');
+    setViewMode('view');
+  };
+
+  const handleChange = (field: keyof Story, value: string | string[]) => {
+    setEditedStory((prev) => ({ ...prev, [field]: value }));
+  };
+
+  // Refine functions
+  const handleRefineSubmit = async () => {
+    if (!feedback.trim()) return;
+    setLoading(true);
+    setSendClicked(true);
+
+    try {
+      console.log('FeedbackModal - Original confidence:', selectedStory?.confidence, 'Input story:', selectedStory);
+      const res = await fetch("http://127.0.0.1:8000/update-story", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ story: selectedStory, feedback }),
+      });
+
+      const updated = await res.json();
+      console.log('FeedbackModal - Backend confidence:', updated.updated_story?.confidence);
+      const normalizedStory = {
+        ...updated.updated_story,
+        usid: updated.updated_story.usid || updated.updated_story.user_story_id || selectedStory.usid,
+        acceptanceCriteria: updated.updated_story.acceptanceCriteria || updated.updated_story.acceptance_criteria || selectedStory.acceptanceCriteria,
+        confidence: selectedStory?.confidence ?? 0.5,
+      };
+      setUpdatedStory(normalizedStory);
+      setEditableStory(normalizedStory);
+      setFeedback("");
+      setShowDialogMessage('Feedback edited successfully');
+    } catch (err) {
+      console.error("LLM update failed:", err);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setSendClicked(false), 300);
+    }
+  };
+
+  const handleRefineSave = () => {
+    console.log('FeedbackModal - Saving with confidence:', editableStory?.confidence ?? updatedStory.confidence);
+    const finalStory = isEditing ? editableStory : updatedStory;
+    const normalizedConfidence = finalStory.confidence ?? selectedStory?.confidence ?? 0.5;
+    const normalizedStory = {
+      ...finalStory,
+      confidence: normalizedConfidence,
+    };
+    setSelectedStory(normalizedStory);
+    setRequirements((prevReqs) =>
+      prevReqs.map((req) => ({
+        ...req,
+        stories: req.stories.map((s) =>
+          s.usid === selectedStory?.usid ? { ...s, ...normalizedStory } : s
+        ),
+        confidence: normalizedConfidence,
+      }))
+    );
+    const updatedRequirement: Requirement = {
+      requirement_id: currentReqId!,
+      user_story_id: normalizedStory.usid,
+      title: normalizedStory.title,
+      user_story: normalizedStory.story,
+      description: normalizedStory.description,
+      acceptance_criteria: normalizedStory.acceptanceCriteria,
+      confidence_score: normalizedConfidence,
+      tshirt_size: normalizedStory.tshirt_size,
+      priority: normalizedStory.priority,
+      tags: normalizedStory.tags,
+    };
+    const updatedStories = fulluserstoriesdataPayload.user_stories.map((r: Requirement) =>
+      r.requirement_id === currentReqId ? updatedRequirement : r
+    );
+    const updatedPayload = { ...fulluserstoriesdataPayload, user_stories: updatedStories };
+    onUpdateUserStoriesPayload(updatedPayload);
+    onUpdatedUserStoriesData(updatedStories);
+    setShowDialogMessage('Feedback saved successfully');
+    setViewMode('view');
+  };
+
+  const handleVoiceInput = () => {
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert("Speech recognition not supported in this browser.");
+      return;
+    }
+
+    if (recognitionRef.current && listening) {
+      recognitionRef.current.stop();
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.continuous = true;
+
+    recognition.onstart = () => setListening(true);
+    recognition.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+      if (timeroutRef.current) {
+        clearTimeout(timeroutRef.current);
+      }
+    };
+
+    recognition.onresult = (event: any) => {
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        transcript += event.results[i][0].transcript;
+      }
+
+      setFeedback((prev) => (prev ? prev + " " + transcript : transcript));
+      if (timeroutRef.current) {
+        clearTimeout(timeroutRef.current);
+      }
+      timeroutRef.current = setTimeout(() => { recognition.stop(); }, 2000);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error:", event.error);
+      setListening(false);
+    };
+
+    recognition.start();
+    recognitionRef.current = recognition;
+  };
+
   return (
     <>
-      <div className="bg-[#f6f6f6] dark:bg-[#181818] rounded-2xl text-black dark:text-white h-[75vh] overflow-hidden flex flex-col">
+      <div className="bg-[#f6f6f6] dark:bg-[#181818] rounded-2xl text-black dark:text-white h-[80vh] overflow-hidden flex flex-col">
         <div className="px-3 py-3 flex items-center gap-2 border-b border-gray-700">
           <div>
             <h1 className="text-[16px] font-semibold">User Stories List</h1>
@@ -299,7 +498,7 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
           </div>
         </div>
 
-        <div className="flex  gap-4 p-6 items-center">
+        <div className="flex gap-4 p-6 items-center">
           <Input
             placeholder="Filter tasks..."
             value={searchText}
@@ -315,7 +514,7 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
             </PopoverTrigger>
             <PopoverContent className="w-55 p-2 bg-gray-900 border-gray-700 text-white">
               <ScrollArea className="h-30 w-full pr-2">
-                <div className="flex flex-col gap-2 ">
+                <div className="flex flex-col gap-2">
                   {uniqueRoles.map((role) => (
                     <label key={role} className="flex items-center gap-2 text-sm">
                       <Checkbox
@@ -442,7 +641,7 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
           </Popover>
         </div>
 
-        <ScrollArea className="flex overflow-y-auto px-4  pr-6 pb-4">
+        <ScrollArea className="flex overflow-y-auto px-4 pr-6 pb-4">
           {paginated.map((req) => (
             <div key={req.id} className="rounded-2xl border dark:border-gray-700 mb-4 ml-2 mr-2">
               <button
@@ -467,7 +666,7 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
               {expandedReqs[req.stories[0]?.usid] && (
                 <ScrollArea className="h-[70px] px-2 space-y-4 bg-white-700 dark:bg-[#1a1a1a] dark:text-white rounded-b-xl">
                   {req.stories.map((story, idx) => (
-                    <div key={idx} className="flex items-center justify-between border-b border-gray-400 dark:border-gray-700 py-2 gap-4">
+                    <div key={story.usid} className="flex items-center justify-between border-b border-gray-400 dark:border-gray-700 py-2 gap-4">
                       <div className="flex items-center text-black dark:text-white pl-4 gap-2 min-w-[180px]">
                         <User2Icon className="w-4 h-4" />
                         <span className="text-sm">{story.role}</span>
@@ -475,185 +674,31 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
                       <div className="flex-1 text-sm text-black dark:text-white px-2">
                         “ {story.story} ”
                         <span><Badge className="pb-0.5 pt-0.5 ml-2 text-sm font-normal rounded-sm bg-[#466ABA] text-white">{story.tshirt_size}</Badge></span>
-                        <span><Badge className="pb-0.5 pt-0.5 ml-2 text-sm font-normal rounded-sm bg-[#466ABA] text-white">{story.priority}</Badge></span>
+                        <span> <Badge
+                          className={`pb-0.5 pt-0.5 ml-2 text-sm font-normal rounded-sm ${
+                            story?.priority === "High"
+                              ? "bg-[#6C4343] text-white"
+                              : story?.priority === "Medium"
+                              ? "bg-[#695A3A] text-white"
+                              : "bg-[#387189] text-white"
+                          }`}
+                        >
+                          {story?.priority}
+                        </Badge>
+                        </span>
                       </div>
-                      <Dialog>
-                        <DialogTrigger asChild>
-                          <Button
-                            className="bg-black dark:bg-white text-white dark:text-black mr-2 h-8 px-3 text-xs rounded-t-md rounded-b-md whitespace-nowrap"
-                            onClick={() => setSelectedStory(story)}
-                          >
-                            <span><Eye></Eye></span>
-                            View
-                          </Button>
-                        </DialogTrigger>
-                        <DialogContent className="w-[1000px] h-[450px] bg-[#1a1a1a] text-white fixed top-[260px] left-1/2 -translate-x-1/2 p-4 rounded-xl shadow-lg">
-                          <DialogClose asChild>
-                            <button
-                              className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"
-                              aria-label="Close"
-                            >
-                            </button>
-                          </DialogClose>
-                          <DialogDescription className="text-base text-white max-h-[500px] overflow-y-auto pr-2">
-                            {selectedStory && (
-                              <>
-                                <DialogHeader>
-                                  <DialogTitle className="text-sm text-gray-400">
-                                    Req Id – {req.id} <ConfidenceBadge confidence={req.confidence} />
-                                  </DialogTitle>
-                                  <DialogDescription className="text-base text-white">
-                                    <div className="mb-2 flex items-center gap-2">
-                                      <span className="text-gray-400 font-semibold">User As A:</span>
-                                      <span
-                                        className={`min-w-[180px] ${
-                                          story.role === "Card Operator"
-                                            ? "text-green-600 dark:text-[#ABE2C9]"
-                                            : "text-blue-600 dark:text-[#5ABAD1]"
-                                        }`}
-                                      >
-                                        {selectedStory.role}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-400 font-semibold">User Story ID:</span>
-                                      <span className="text-white ml-2">{selectedStory.usid}</span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-400 font-semibold">Title:</span>
-                                      <span className="text-white ml-2">{selectedStory.title}</span>
-                                    </div>
-                                   
-                                    <div>
-                                      <span className="text-gray-400 font-semibold block mb-2">Labels/Tags:</span>
-                                      <div className="flex flex-wrap gap-2">
-                                        {selectedStory.tags.map((item, index) => (
-                                          <span
-                                            key={index}
-                                            className="bg-gray-700 text-white text-sm px-3 py-1 rounded-full border border-gray-600 hover:bg-gray-600 transition-colors"
-                                          >
-                                            {item}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-400 font-semibold"><br />User Story:</span>
-      
-                                      <ul className="text-white">
-                                        {selectedStory.story}{" "}
-                                        <span><Badge className="pb-0.5 pt-0.5 ml-2 text-sm font-normal rounded-sm bg-[#466ABA] text-white">{selectedStory.tshirt_size}</Badge></span>
-                                        <span><Badge className="pb-0.5 pt-0.5 ml-2 text-sm font-normal rounded-sm bg-[#466ABA] text-white">{selectedStory.priority}</Badge></span>
-                                      </ul>
-                                    </div>
-
-                                     <div>
-                                      <br/>
-                                      <span className="text-gray-400 font-semibold">Description:</span>
-                                      <span className="text-white ml-2">{selectedStory.description}</span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-400 font-semibold"><br />Acceptance Criteria:</span>
-                                      <ul className="list-disc pl-6 mt-2 space-y-1">
-                                        {selectedStory.acceptanceCriteria.map((item, index) => (
-                                          <li key={index} className="text-white">{item}</li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  </DialogDescription>
-                                </DialogHeader>
-                                <div className="fixed bottom-4 right-20 z-50">
-                                  <button
-                                    onClick={() => setShowEdit(true)}
-                                    className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-full shadow-lg transition duration-200"
-                                    title="Edit story"
-                                  >
-                                    <Pencil className="w-5 h-5" />
-                                  </button>
-                                </div>
-                                <div className="fixed bottom-4 right-4 z-50">
-                                  <button
-                                    onClick={() => setShowFeedback(true)}
-                                    className="bg-purple-600 hover:bg-purple-700 text-white p-3 rounded-full shadow-lg transition duration-200"
-                                    title="Suggest improvements"
-                                  >
-                                    <Sparkles className="w-5 h-5" />
-                                  </button>
-                                </div>
-                                {showFeedback && (
-                                  <FeedbackModal
-                                    story={selectedStory}
-                                    onClose={() => setShowFeedback(false)}
-                                    onUpdate={(updatedResponse) => {
-                                      const updatedStory = updatedResponse.updated_story || selectedStory;
-                                      setSelectedStory(updatedStory);
-                                      setShowFeedback(false);
-                                      setRequirements((prevReqs) =>
-                                        prevReqs.map((req) => ({
-                                          ...req,
-                                          stories: req.stories.map((s) =>
-                                            s.story === selectedStory?.story
-                                              ? { ...s, ...updatedStory }
-                                              : s
-                                          ),
-                                        }))
-                                      );
-                                      const updatedRequirement = {
-                                        requirement_id: req.id,
-                                        user_story_id: updatedStory.usid,
-                                        title: updatedStory.title,
-                                        user_story: updatedStory.story,
-                                        description: updatedStory.description,
-                                        acceptance_criteria: updatedStory.acceptanceCriteria,
-                                        confidence_score: updatedStory.confidence ?? req.confidence,
-                                        tshirt_size: updatedStory.tshirt_size,
-                                        priority: updatedStory.priority,
-                                        tags: updatedStory.tags,
-                                      };
-                                      fulluserstoriesdataPayload.user_stories = fulluserstoriesdataPayload.user_stories.map((r) =>
-                                        r.requirement_id === req.id ? updatedRequirement : r
-                                      );
-                                    }}
-                                  />
-                                )}
-                                {showEdit && selectedStory && (
-                                  <EditStoryModal
-                                    story={selectedStory}
-                                    onClose={() => setShowEdit(false)}
-                                    onSave={(updatedStory) => {
-                                      setSelectedStory(updatedStory);
-                                      setShowEdit(false);
-                                      setRequirements((prevReqs) =>
-                                        prevReqs.map((req) => ({
-                                          ...req,
-                                          stories: req.stories.map((s) =>
-                                            s.story === selectedStory?.story ? { ...s, ...updatedStory } : s
-                                          ),
-                                        }))
-                                      );
-                                      const updatedRequirement = {
-                                        requirement_id: req.id,
-                                        user_story_id: updatedStory.usid,
-                                        title: updatedStory.title,
-                                        user_story: updatedStory.story,
-                                        description: updatedStory.description,
-                                        acceptance_criteria: updatedStory.acceptanceCriteria,
-                                        confidence_score: updatedStory.confidence ?? req.confidence,
-                                        tshirt_size: updatedStory.tshirt_size,
-                                        priority: updatedStory.priority,
-                                        tags: updatedStory.tags,
-                                      };
-                                      fulluserstoriesdataPayload.user_stories = fulluserstoriesdataPayload.user_stories.map((r) =>
-                                        r.requirement_id === req.id ? updatedRequirement : r
-                                      );
-                                    }}
-                                  />
-                                )}
-                              </>
-                            )}
-                          </DialogDescription>
-                        </DialogContent>
-                      </Dialog>
+                      <Button
+                        className="bg-black dark:bg-white text-white dark:text-black mr-2 h-8 px-3 text-xs rounded-t-md rounded-b-md whitespace-nowrap"
+                        onClick={() => {
+                          console.log('UserStoriesTab - Setting selectedStory:', story);
+                          setSelectedStory(story);
+                          setCurrentReqId(req.id);
+                          setViewMode('view');
+                          setIsViewOpen(true);
+                        }}
+                      >
+                        Edit/Refine Feedback
+                      </Button>
                     </div>
                   ))}
                   <ScrollBar orientation="vertical"></ScrollBar>
@@ -821,6 +866,664 @@ export default function UserStoriesTab({ goTogerkin, userstoriesData, fulluserst
           </div>
         </div>
       </div>
+     <Dialog open={isViewOpen} onOpenChange={(open) => {
+  setIsViewOpen(open);
+  if (!open) {
+    setSelectedStory(null);
+    setCurrentReqId(null);
+    setViewMode('view');
+    setFeedback('');
+    setUpdatedStory(null);
+    setIsEditing(false);
+    setEditableStory(null);
+    setEditedStory(null as any);
+    setShowDialogMessage('');
+  }
+}}>
+  <DialogContent className={`w-[1200px] max-w-[1200px] sm:w-[1200px] sm:max-w-[1200px] bg-[#1a1a1a] text-white fixed top-[280px] left-1/2 -translate-x-1/2 p-4 rounded-xl shadow-lg max-h-[80vh] overflow-hidden flex flex-col ${
+    viewMode === 'refine' ? 'h-[700px]' : 'h-[500px]'
+  }`}>
+    <DialogClose asChild>
+      <button
+        className="absolute top-4 right-4 z-20 text-gray-400 hover:text-white transition-colors text-xl"
+        aria-label="Close dialog"
+      > 
+        ×
+      </button>
+    </DialogClose>
+
+    <DialogHeader className="sticky top-0 bg-[#1a1a1a] z-10 border-b border-gray-700 p-4">
+      <DialogTitle className="text-sm text-gray-400 flex justify-between items-center">
+        {viewMode === 'refine' && updatedStory ? (
+          <div className="flex-1 flex justify-between items-center">
+            <span>Refined Feedback</span>
+            <Button 
+              variant="ghost" 
+              className="text-white text-sm h-6 px-2"
+              onClick={() => {
+                setUpdatedStory(null);
+                setFeedback('');
+                setIsEditing(false);
+                setEditableStory(null);
+              }}
+            >
+              Clear All Feedback
+            </Button>
+          </div>
+        ) : (
+          <>
+            {viewMode === 'refine' ? 'Refine Feedback' : 'Edit/Refine Feedback'}
+            <div className="flex gap-2">
+              {viewMode === 'view' && (
+                <>
+                  <Button 
+                    className="bg-[#2B2A2A] hover:bg-[#48494B] text-[#FFFFFF] px-4 py-2 text-sm"
+                    onClick={handleEditClick}
+                  >
+                    Edit Feedback
+                  </Button>
+                  <Button 
+                    className="bg-[#2B2A2A] hover:bg-[#48494B] text-[#FFFFFF] px-4 py-2 text-sm"
+                    onClick={handleRefineClick}
+                  >
+                    Refine Feedback
+                  </Button>
+                </>
+              )}
+              {(viewMode === 'edit' || viewMode === 'refine') && (
+                <Button 
+                  variant="ghost" 
+                  className="text-white px-4 py-2 text-sm"
+                  onClick={() => setViewMode('view')}
+                >
+                  Back
+                </Button>
+              )}
+            </div>
+          </>
+        )}
+      </DialogTitle>
+    </DialogHeader>
+    
+    <div className="flex-1 overflow-y-auto p-4 pr-2">
+      {selectedStory && currentReqId && (() => {
+        const currentReq = requirements.find((r) => r.id === currentReqId);
+        if (!currentReq) return null;
+        return (
+          <>
+            {showDialogMessage && (
+              <div className="mb-4 flex items-center gap-2 p-3 bg-green-100 dark:bg-green-900 rounded-md text-green-800 dark:text-green-200">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 30.266 30.266">
+                  <path d="M30.266,15.133A15.133,15.133,0,1,1,15.133,0,15.133,15.133,0,0,1,30.266,15.133ZM22.756,9.4a1.419,1.419,0,0,0-2.043.042l-6.57,8.37-3.959-3.961a1.419,1.419,0,0,0-2.005,2.005l5.005,5.007a1.419,1.419,0,0,0,2.041-.038l7.551-9.439A1.419,1.419,0,0,0,22.758,9.4Z" fill="#24d304" />
+                </svg>
+                {showDialogMessage}
+              </div>
+            )}
+            
+            {viewMode === 'view' && (
+              <DialogDescription className="text-base text-white space-y-4">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-gray-400 font-semibold">User As A:</span>
+                  <span
+                    className={`min-w-[180px] ${
+                      selectedStory.role === "Card Operator"
+                        ? "text-green-600 dark:text-[#ABE2C9]"
+                        : "text-blue-600 dark:text-[#5ABAD1]"
+                    }`}
+                  >
+                    {selectedStory.role}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 font-semibold">User Story ID:</span>
+                  <span className="text-white ml-2">{selectedStory.usid}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 font-semibold">Title:</span>
+                  <span className="text-white ml-2">{selectedStory.title}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 font-semibold"><br />Labels/Tags:</span>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedStory.tags.map((item, index) => (
+                      <span
+                        key={index}
+                        className="bg-gray-700 text-white text-sm px-3 py-1 rounded-full border border-gray-600 hover:bg-gray-600 transition-colors"
+                      >
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-gray-400 font-semibold"><br />User Story:</span>
+                  <div className="text-white">
+                    {selectedStory.story}
+                    <span className="ml-2">
+                      <Badge className="pb-0.5 pt-0.5 text-sm font-normal rounded-sm bg-[#466ABA] text-white">
+                        {selectedStory.tshirt_size}
+                      </Badge>
+                    </span>
+                    <span className="ml-1">
+                      <Badge
+                        className={`pb-0.5 pt-0.5 text-sm font-normal rounded-sm ${
+                          selectedStory?.priority === "High"
+                            ? "bg-[#6C4343] text-white"
+                            : selectedStory?.priority === "Medium"
+                            ? "bg-[#695A3A] text-white"
+                            : "bg-[#387189] text-white"
+                        }`}
+                      >
+                        {selectedStory?.priority}
+                      </Badge>
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <br />
+                  <span className="text-gray-400 font-semibold">Description:</span>
+                  <span className="text-white ml-2 block mt-1">{selectedStory.description}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 font-semibold"><br />Acceptance Criteria:</span>
+                  <ul className="list-disc pl-6 mt-2 space-y-1">
+                    {selectedStory.acceptanceCriteria.map((item, index) => (
+                      <li key={index} className="text-white">{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </DialogDescription>
+            )}
+
+            {viewMode === 'edit' && (
+              <>
+                <div className="flex-1 overflow-y-auto space-y-4">
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">User Story ID</label>
+                    <input
+                      type="text"
+                      value={editedStory.usid}
+                      disabled
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-gray-400 cursor-not-allowed"
+                    />
+                  </div>
+                  {editedStory.confidence !== undefined && (
+                    <div>
+                      <label className="text-sm text-gray-400 block mb-1">Confidence Score</label>
+                      <input
+                        type="text"
+                        value={editedStory.confidence.toString()}
+                        disabled
+                        className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-gray-400 cursor-not-allowed"
+                      />
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Title</label>
+                    <input
+                      type="text"
+                      value={editedStory.title}
+                      onChange={(e) => handleChange("title", e.target.value)}
+                      placeholder="Title"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">User Story</label>
+                    <textarea
+                      value={editedStory.story}
+                      onChange={(e) => handleChange("story", e.target.value)}
+                      placeholder="User Story"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white h-24 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Description</label>
+                    <textarea
+                      value={editedStory.description}
+                      onChange={(e) => handleChange("description", e.target.value)}
+                      placeholder="Description"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white h-24 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Acceptance Criteria</label>
+                    <textarea
+                      value={editedStory.acceptanceCriteria.join("\n")}
+                      onChange={(e) => handleChange("acceptanceCriteria", e.target.value.split("\n"))}
+                      placeholder="Acceptance Criteria (one per line)"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white h-32 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Labels/Tags</label>
+                    <textarea
+                      value={editedStory.tags.join("\n")}
+                      onChange={(e) => handleChange("tags", e.target.value.split("\n"))}
+                      placeholder="Tags (one per line)"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white h-32 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Priority</label>
+                    <input
+                      type="text"
+                      value={editedStory.priority}
+                      onChange={(e) => handleChange("priority", e.target.value)}
+                      placeholder="Priority"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">T-Shirt Size</label>
+                    <input
+                      type="text"
+                      value={editedStory.tshirt_size}
+                      onChange={(e) => handleChange("tshirt_size", e.target.value)}
+                      placeholder="T-Shirt Size"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Role</label>
+                    <input
+                      type="text"
+                      value={editedStory.role}
+                      onChange={(e) => handleChange("role", e.target.value)}
+                      placeholder="Role"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 p-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+                <DialogFooter className="bg-[#1a1a1a] border-t border-gray-700 p-4">
+                  <Button variant="ghost" onClick={() => setViewMode('view')} className="mr-auto">
+                    Clear
+                  </Button>
+                  <Button onClick={handleEditSave}>Save</Button>
+                </DialogFooter>
+              </>
+            )}
+
+            {viewMode === 'refine' && (
+  <div className="flex flex-col h-full">
+    {/* Top Section - Initial Story Display */}
+    {!updatedStory ? (
+      <div className="flex-1 overflow-y-auto mb-4">
+        <div className="p-4 border border-gray-700 rounded-md  text-sm space-y-3">
+          <div>
+            <span className="text-gray-400">User Story ID:</span>{" "}
+            <span className="text-white">{selectedStory.usid}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Title:</span>{" "}
+            <span className="text-white">{selectedStory.title}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Role:</span>{" "}
+            <span className="text-white">{selectedStory.role}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Story:</span>{" "}
+            <span className="text-white">{selectedStory.story}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Description:</span>{" "}
+            <span className="text-white">{selectedStory.description}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">T-shirt Size:</span>{" "}
+            <span className="text-white">{selectedStory.tshirt_size}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Priority:</span>{" "}
+            <span className="text-white">{selectedStory.priority}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Acceptance Criteria:</span>
+            <ul className="list-disc pl-5 text-white mt-1 space-y-1">
+              {selectedStory.acceptanceCriteria.map((item: string, idx: number) => (
+                <li key={idx}>{item}</li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <span className="text-gray-400">Labels/Tags:</span>
+            <ul className="list-disc pl-5 text-white mt-1 space-y-1">
+              {selectedStory.tags.map((item: string, idx: number) => (
+                <li key={idx}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    ) : null}
+
+    {/* Updated Story Section - Only show if exists */}
+    {updatedStory && (
+      <div className="flex-1 overflow-y-auto mb-4">
+        <div className="p-4 border border-gray-700 rounded-md  text-sm space-y-3">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-white font-semibold">Refined Story</h3>
+            {/* Edit button only when not editing */}
+            {/* {!isEditing && (
+              <button
+                onClick={() => {
+                  setIsEditing(true);
+                  // Create a deep copy to ensure editableStory is properly initialized
+                  setEditableStory({
+                    ...updatedStory,
+                    acceptanceCriteria: [...updatedStory.acceptanceCriteria],
+                    tags: [...updatedStory.tags]
+                  });
+                }}
+                className="text-yellow-400 hover:text-yellow-300 text-sm"
+              >
+                Edit
+              </button>
+            )} */}
+          </div>
+          
+          {isEditing ? (
+            <>
+              <div>
+  <span className="text-gray-400">User Story ID:</span>
+  <input
+    value={editableStory?.usid || ''}
+    readOnly
+    className="w-full mt-1 bg-gray-700 text-white p-2 rounded-md border border-gray-600 opacity-60 cursor-not-allowed"
+  />
+</div>
+              <div>
+                <span className="text-gray-400">Title:</span>
+                <input
+                  value={editableStory?.title || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return { ...prev, title: e.target.value };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                />
+              </div>
+              <div>
+                <span className="text-gray-400">Role:</span>
+                <input
+                  value={editableStory?.role || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return { ...prev, role: e.target.value };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                />
+              </div>
+              <div>
+                <span className="text-gray-400">Story:</span>
+                <textarea
+                  value={editableStory?.story || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return { ...prev, story: e.target.value };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                  rows={3}
+                />
+              </div>
+              <div>
+                <span className="text-gray-400">Description:</span>
+                <textarea
+                  value={editableStory?.description || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return { ...prev, description: e.target.value };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                  rows={3}
+                />
+              </div>
+              <div>
+                <span className="text-gray-400">T-shirt Size:</span>
+                <input
+                  value={editableStory?.tshirt_size || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return { ...prev, tshirt_size: e.target.value };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                />
+              </div>
+              <div>
+                <span className="text-gray-400">Priority:</span>
+                <input
+                  value={editableStory?.priority || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return { ...prev, priority: e.target.value };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                />
+              </div>
+              <div>
+                <span className="text-gray-400">Acceptance Criteria:</span>
+                <textarea
+                  value={editableStory?.acceptanceCriteria?.join("\n") || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return {
+                        ...prev,
+                        acceptanceCriteria: e.target.value.split("\n").map(item => item.trim()).filter(item => item !== '')
+                      };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                  rows={8}
+                />
+              </div>
+              <div>
+                <span className="text-gray-400">Labels/Tags:</span>
+                <textarea
+                  value={editableStory?.tags?.join("\n") || ''}
+                  onChange={(e) => {
+                    setEditableStory(prev => {
+                      if (!prev) return prev;
+                      return {
+                        ...prev,
+                        tags: e.target.value.split("\n").map(item => item.trim()).filter(item => item !== '')
+                      };
+                    });
+                  }}
+                  className="w-full mt-1  text-white p-2 rounded-md border border-gray-600"
+                  rows={8}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <span className="text-gray-400">User Story ID:</span>{" "}
+                <span className="text-white">{updatedStory.usid}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Title:</span>{" "}
+                <span className="text-white">{updatedStory.title}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Role:</span>{" "}
+                <span className="text-white">{updatedStory.role}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Story:</span>{" "}
+                <span className="text-white">{updatedStory.story}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Description:</span>{" "}
+                <span className="text-white">{updatedStory.description}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">T-shirt Size:</span>{" "}
+                <span className="text-white">{updatedStory.tshirt_size}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Priority:</span>{" "}
+                <span className="text-white">{updatedStory.priority}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Acceptance Criteria:</span>
+                <ul className="list-disc pl-5 text-white mt-1 space-y-1">
+                  {updatedStory.acceptanceCriteria.map((item: string, idx: number) => (
+                    <li key={idx}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <span className="text-gray-400">Labels/Tags:</span>
+                <ul className="list-disc pl-5 text-white mt-1 space-y-1">
+                  {updatedStory.tags.map((item: string, idx: number) => (
+                    <li key={idx}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    )}
+
+    {/* Feedback Input Section - Always visible in refine mode */}
+    <div className="border-t border-gray-700 pt-2">
+      <div className="p-2 rounded-md bg-gray-900" style={{ backgroundColor: '#2E2E2E' }}>
+  <div className="flex items-center justify-between mb-1">
+    <span className="text-gray-400 text-xs font-medium">Suggest Improvements</span>
+    <button
+      onClick={() => {
+        setFeedback('');
+        setUpdatedStory(null);
+        setIsEditing(false);
+        setEditableStory(null);
+      }}
+      className="text-gray-400 hover:text-white transition-colors text-lg"
+      aria-label="Clear feedback"
+    >
+      ×
+    </button>
+  </div>
+  <div className="relative mb-2">
+    <input
+      type="text"
+      placeholder="Type your feedback..."
+      value={feedback}
+      onChange={(e) => setFeedback(e.target.value)}
+      className="w-full pr-16 pl-3 py-1.5 rounded border border-gray-700 dark:border-gray-700 bg-black text-white dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+      style={{
+        backgroundColor: '#000000',
+        color: 'var(--input-text, #f9fafb)'
+      }}
+      aria-label="Feedback input"
+    />
+    <button
+      onClick={handleVoiceInput}
+      className={`absolute right-8 top-1/2 -translate-y-1/2 p-1.5 rounded-full ${
+        listening ? "bg-red-600 dark:bg-red-600" : "bg-gray-700 dark:bg-gray-700"
+      } text-white transition duration-200 ease-in-out hover:scale-105 hover:shadow-md`}
+      aria-label="Voice input"
+      title="Voice input"
+    >
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+      </svg>
+    </button>
+    <button
+      onClick={handleRefineSubmit}
+      disabled={loading || !feedback.trim()}
+      className={`absolute right-1 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-purple-600 text-white transition duration-200 ease-in-out
+        ${!loading && "hover:scale-105 hover:shadow-md"} 
+        ${sendClicked ? "animate-ping" : ""}
+      `}
+      aria-label="Send feedback"
+      title="Send"
+    >
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+      </svg>
+    </button>
+  </div>
+        
+        {/* Buttons inside the input box */}
+        {updatedStory && (
+          <div className="flex justify-end gap-1 mt-2 pt-1 border-t border-gray-700">
+            {isEditing ? (
+              <>
+                <button
+                  onClick={() => {
+                    setIsEditing(false);
+                    setEditableStory(null);
+                  }}
+                  className="text-white hover:text-black bg-[#2E2E2E] hover:bg-[#E5E5E5] px-2 py-1.5 rounded text-xs transition-colors duration-200"
+                >
+                  Cancel Edit
+                </button>
+                <button
+                  onClick={() => {
+                    if (editableStory) {
+                      setUpdatedStory(editableStory);
+                      setIsEditing(false);
+                      setEditableStory(null);
+                      setShowDialogMessage("Feedback saved successfully");
+                      setTimeout(() => setShowDialogMessage(""), 3000);
+                    }
+                  }}
+                  className="text-white hover:text-black bg-[#2E2E2E] hover:bg-[#E5E5E5] px-2 py-1.5 rounded text-xs transition-colors duration-200"
+                >
+                  Save Edits
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => {
+                    setIsEditing(true);
+                    setEditableStory({
+                      ...updatedStory,
+                      acceptanceCriteria: [...updatedStory.acceptanceCriteria],
+                      tags: [...updatedStory.tags]
+                    });
+                  }}
+                  className="text-white hover:text-black bg-[#2E2E2E] hover:bg-[#E5E5E5] px-2 py-1.5 rounded text-xs transition-colors duration-200"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={handleRefineSave}
+                  disabled={!updatedStory}
+                  className="text-white hover:text-black disabled:text-white disabled:hover:text-white bg-[#2E2E2E] hover:bg-[#E5E5E5] disabled:hover:bg-[#2E2E2E] px-2 py-1.5 rounded text-xs disabled:opacity-50 transition-colors duration-200"
+                >
+                  Save
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+)}
+          </>
+        );
+      })()}
+    </div>
+  </DialogContent>
+</Dialog>
     </>
   );
-}
+} 
