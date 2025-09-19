@@ -1,0 +1,277 @@
+'use client';
+import * as React from 'react';
+import { useState, useRef } from 'react';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Loader2, X } from 'lucide-react';
+
+interface ImageUploadTabProps {
+  isUploadComplete: boolean;
+  onGenerateUserStories: (userStories: { user_stories: any[] }) => Promise<void>;
+  uploadedImageFile?: File | null;
+  uploadedDocFile?: File | null;
+  onFilesUploaded?: (image: File | null, doc: File | null) => void;
+  onClearImage?: () => void;
+  onClearDoc?: () => void;
+}
+
+export default function ImageUploadTab({ 
+  isUploadComplete,
+  onGenerateUserStories,
+  uploadedImageFile,
+  uploadedDocFile,
+  onFilesUploaded,
+  onClearImage,
+  onClearDoc
+}: ImageUploadTabProps) {
+  const [isUploading, setIsUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showSuccessMessage, setShowSuccessMessage] = useState<string | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [isDocEnabled, setIsDocEnabled] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = async (type: 'image' | 'doc', event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (type === 'image' && !file.type.startsWith('image/')) {
+      setError('Please select a valid image file.');
+      return;
+    }
+
+    setError(null);
+    if (type === 'image') {
+      setImageFile(file);
+    } else {
+      setDocFile(file);
+    }
+  };
+
+  const handleClearFile = (type: 'image' | 'doc') => {
+    if (type === 'image') {
+      setImageFile(null);
+      if (imageInputRef.current) imageInputRef.current.value = '';
+      onClearImage?.();
+    } else {
+      setDocFile(null);
+      if (docInputRef.current) docInputRef.current.value = '';
+      setIsDocEnabled(false);
+      onClearDoc?.();
+    }
+  };
+
+  const handleGenerateClick = async () => {
+    const imageToUse = imageFile || uploadedImageFile;
+    if (!imageToUse) {
+      setError('No image file selected.');
+      return;
+    }
+
+    setIsUploading(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('image_file', imageToUse);
+
+      const docToUse = isDocEnabled ? (docFile || uploadedDocFile) : null;
+      if (docToUse) {
+        formData.append('reference_files', docToUse);
+      }
+
+      const response = await fetch('http://127.0.0.1:8000/extract-and-generate', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to generate user stories.');
+      }
+
+      const result = await response.json();
+      setShowSuccessMessage('User stories generated successfully!');
+      setTimeout(() => setShowSuccessMessage(null), 3000);
+
+      // Update parent with uploaded files
+      onFilesUploaded?.(imageToUse, docToUse);
+
+      // Clear local selected files
+      setImageFile(null);
+      if (imageInputRef.current) imageInputRef.current.value = '';
+      setDocFile(null);
+      if (docInputRef.current) docInputRef.current.value = '';
+
+      await onGenerateUserStories(result); // Pass user stories to FigmaUserStoriesTab
+    } catch (err) {
+      console.error('Generation error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to generate user stories.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const hasSelectedOrUploadedImage = !!(imageFile || uploadedImageFile);
+  const hasSelectedOrUploadedDoc = !!(docFile || uploadedDocFile);
+
+  return (
+    <div className="p-0 flex flex-col items-center w-full">
+      {/* Outer Box */}
+      <div className="w-full max-w-7xl bg-white dark:bg-[#181818] rounded-lg p-6 relative">
+        {/* Upload Files Text */}
+        <p className="text-black dark:text-white text-sm font-semibold">Upload Files</p>
+
+        {/* Inner Box - Always Two Columns */}
+        <div className="w-full bg-[#1E1F1F] dark:bg-[#1E1F1F] light:bg-white mt-[15px] border border-[#535458] dark:border-[#535458] light:border-gray-200 rounded-lg p-6 grid grid-cols-[1fr_auto_1fr] gap-4 mx-auto">
+          
+          {/* Image Upload Section */}
+          <div className="flex flex-col gap-2">
+            <p className="text-white dark:text-white light:text-black text-sm">Select file</p>
+            <div className="flex items-center gap-2">
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                onChange={(e) => handleFileChange('image', e)}
+                className="hidden"
+                id="image-upload"
+                disabled={isUploading}
+              />
+              <Button
+                onClick={() => imageInputRef.current?.click()}
+                className={`w-[10vw] bg-[#E5E5E5] dark:bg-[#E5E5E5] light:bg-white text-black dark:text-black light:text-black hover:bg-[#D0D0D0] dark:hover:bg-[#D0D0D0] light:hover:bg-gray-100 border border-[#535458] dark:border-[#535458] light:border-gray-300 rounded-md py-2 px-3 ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                disabled={isUploading}
+              >
+                Choose File
+              </Button>
+              <div className="flex items-center gap-1">
+                {!hasSelectedOrUploadedImage && (
+                  <p className="text-[#7C7F84] dark:text-[#7C7F84] light:text-gray-500 text-sm">No files chosen</p>
+                )}
+                {imageFile && (
+                  <>
+                    <p className="text-[#7C7F84] dark:text-[#7C7F84] light:text-gray-500 text-sm">{imageFile.name}</p>
+                    <Button
+                      onClick={() => handleClearFile('image')}
+                      className="p-0 bg-transparent hover:bg-transparent min-w-0"
+                      title="Clear file"
+                    >
+                      <X className="w-4 h-4 text-[#7C7F84] dark:text-[#7C7F84] light:text-gray-500" />
+                    </Button>
+                  </>
+                )}
+                {isUploadComplete && uploadedImageFile && !imageFile && (
+                  <>
+                    <p className="text-[#73787B] dark:text-[#73787B] light:text-gray-600 text-sm">Uploaded: {uploadedImageFile.name}</p>
+                    <Button
+                      onClick={() => handleClearFile('image')}
+                      className="p-0 bg-transparent hover:bg-transparent min-w-0"
+                      title="Clear uploaded file"
+                    >
+                      <X className="w-4 h-4 text-[#73787B] dark:text-[#73787B] light:text-gray-600" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+            <p className="text-white dark:text-white light:text-black text-xs font-semibold">Supported format</p>
+            <p className="text-white dark:text-white light:text-black text-xs">jpg, png, jpeg, svg</p>
+          </div>
+
+          {/* Divider */}
+          <div className="border-l border-[#535458] dark:border-[#535458] light:border-gray-200"></div>
+
+          {/* Document Upload Section */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="doc-checkbox"
+                checked={isDocEnabled}
+                onCheckedChange={(checked) => setIsDocEnabled(checked as boolean)}
+              />
+              <label htmlFor="doc-checkbox" className="text-white dark:text-white light:text-black text-sm">
+                Select document (Optional)
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                ref={docInputRef}
+                type="file"
+                accept=".docx,.pdf,.xls,.xlsx"
+                onChange={(e) => handleFileChange('doc', e)}
+                className="hidden"
+                id="doc-upload"
+                disabled={isUploading || !isDocEnabled}
+              />
+              <Button
+                onClick={() => docInputRef.current?.click()}
+                className={`w-[10vw] bg-[#E5E5E5] dark:bg-[#E5E5E5] light:bg-white text-black dark:text-black light:text-black hover:bg-[#D0D0D0] dark:hover:bg-[#D0D0D0] light:hover:bg-gray-100 border border-[#535458] dark:border-[#535458] light:border-gray-300 rounded-md py-2 px-3 ${(isUploading || !isDocEnabled) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                disabled={isUploading || !isDocEnabled}
+              >
+                Choose File
+              </Button>
+              <div className="flex items-center gap-1">
+                {!hasSelectedOrUploadedDoc && (
+                  <p className="text-[#7C7F84] dark:text-[#7C7F84] light:text-gray-500 text-sm">No files chosen</p>
+                )}
+                {docFile && (
+                  <>
+                    <p className="text-[#7C7F84] dark:text-[#7C7F84] light:text-gray-500 text-sm">{docFile.name}</p>
+                    <Button
+                      onClick={() => handleClearFile('doc')}
+                      className="p-0 bg-transparent hover:bg-transparent min-w-0"
+                      title="Clear file"
+                    >
+                      <X className="w-4 h-4 text-[#7C7F84] dark:text-[#7C7F84] light:text-gray-500" />
+                    </Button>
+                  </>
+                )}
+                {isUploadComplete && uploadedDocFile && !docFile && (
+                  <>
+                    <p className="text-[#73787B] dark:text-[#73787B] light:text-gray-600 text-sm">Uploaded: {uploadedDocFile.name}</p>
+                    <Button
+                      onClick={() => handleClearFile('doc')}
+                      className="p-0 bg-transparent hover:bg-transparent min-w-0"
+                      title="Clear uploaded file"
+                    >
+                      <X className="w-4 h-4 text-[#73787B] dark:text-[#73787B] light:text-gray-600" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+            <p className="text-white dark:text-white light:text-black text-xs font-semibold">Supported format</p>
+            <p className="text-white dark:text-white light:text-black text-xs">docx, pdf, xls</p>
+          </div>
+        </div>
+
+        {/* Bottom Buttons */}
+        <div className="flex justify-start mt-6 w-full max-w-4xl">
+          <Button
+            onClick={handleGenerateClick}
+            disabled={(!imageFile && !uploadedImageFile) || isUploading}
+            className={`bg-[#1E1F1F] dark:bg-[#1E1F1F] light:bg-white text-[#DBDBDB] dark:text-[#DBDBDB] light:text-black border border-[#535458] dark:border-[#535458] light:border-gray-300 rounded-md hover:bg-[#E5E5E5] dark:hover:bg-[#E5E5E5] light:hover:bg-gray-50 hover:text-black dark:hover:text-black light:hover:text-black transition-colors ${(!imageFile && !uploadedImageFile) || isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {isUploading ? (
+              <span className="flex items-center">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                Generating Stories...
+              </span>
+            ) : (
+              'Generate User Stories'
+            )}
+          </Button>
+        </div>
+
+        {/* Messages */}
+        {error && <p className="text-red-500 dark:text-red-400 mt-4">Error: {error}</p>}
+        {showSuccessMessage && (
+          <p className="text-green-600 dark:text-green-400 mt-4 animate-pulse">{showSuccessMessage}</p>
+        )}
+      </div>
+    </div>
+  );
+}
